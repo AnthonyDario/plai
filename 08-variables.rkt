@@ -4,57 +4,37 @@
 ;; Chapter 8 Mutation
 ;; ----------------------
 
-;; We are modelling mutation using boxes
-;; We can use a box to store a value, modify the value, and retrieve the value
-;;
-;;      box : ('a -> (boxof 'a))            Create a box out of a value
-;;      unbox : ((boxof 'a) -> 'a)          Retrieve the value from the box
-;;      set-box! : ((boxof 'a) 'a -> void)  Modify the value inside the box
-;; 
-;; It can also be helpful to mutate groups of values, so we can use begin to
-;; write a sequence of operations (presumably mutable), and return the result
-;; of the last one
+;; Section on variables. Now we will be able to set the value of
+;; an identifier
 
-;; Exercise: How would you limit store locations only to boxes?
-;;           We would need to change the function application so that it makes
-;;           a new box.
+;; I'm going to start throwing away some baggage like the booleans
 
 ;; ----------------
 ;; Types
 ;; ----------------
 (define-type ExprC
-  [numC    (n : number)]
-  [boolC   (b : boolean)]
-  [idC     (x : symbol)]
-  [plusC   (l : ExprC) (r : ExprC)]
-  [multC   (l : ExprC) (r : ExprC)]
-  [ifC     (c : ExprC) (l : ExprC) (r : ExprC)]
-  [appC    (f : ExprC) (a : ExprC)]
-  [lamC    (a : symbol) (body : ExprC)]
-  [boxC    (a : ExprC)]
-  [unboxC  (a : ExprC)]
-  [setboxC (b : ExprC) (v : ExprC)]
-  [seqC    (b1 : ExprC) (b2 : ExprC)])
+  [numC  (n : number)]
+  [varC  (x : symbol)]
+  [plusC (l : ExprC)  (r : ExprC)]
+  [multC (l : ExprC)  (r : ExprC)]
+  [appC  (f : ExprC)  (a : ExprC)]
+  [lamC  (a : symbol) (body : ExprC)]
+  [setC  (v : symbol) (arg : ExprC)]
+  [seqC  (b1 : ExprC) (b2 : ExprC)])
 
 (define-type ExprS
   [numS    (n : number)]
-  [boolS   (b : boolean)]
-  [idS     (x : symbol)]
+  [varS    (x : symbol)]
   [plusS   (l : ExprS)  (r : ExprS)]
   [bminusS (l : ExprS)  (r : ExprS)] ;; binary minus
   [uminusS (e : ExprS)]              ;; unary minus
   [multS   (l : ExprS)  (r : ExprS)]
-  [ifS     (c : ExprS)  (l : ExprS) (r : ExprS)]
   [appS    (f : ExprS)  (a : ExprS)]
   [lamS    (a : symbol) (b : ExprS)]
-  [letS    (n : symbol) (a : ExprS) (b : ExprS)]
-  [boxS    (a : ExprS)]
-  [unboxS  (a : ExprS)])
+  [letS    (n : symbol) (a : ExprS) (b : ExprS)])
 
 (define-type Value
   [numV  (n : number)]
-  [boolV (b : boolean)]
-  [boxV  (l : Location)]
   [closV (arg : symbol) (body : ExprC) (env : Env)])
 
 ;; We need a result type for our interpreter to return
@@ -159,7 +139,6 @@
 
 (define (parse [s : s-expression]) : ExprS
   (cond
-    [(s-exp-boolean? s) (boolS (s-exp->boolean s))]
     [(s-exp-number? s) (numS (s-exp->number s))]
     [(s-exp-list? s)
       (let ([sl (s-exp->list s)])
@@ -175,36 +154,27 @@
                       (bminusS (parse (second sl)) 
                                (parse (third sl)))]
                      [else (uminusS (parse (second sl)))])]
-              [(if)  (ifS  (parse (second sl)) 
-                           (parse (third sl))
-                           (parse (fourth sl)))]
               [(lam) (lamS (s-exp->symbol (second sl)) 
                            (parse (third sl)))]
               [(let) (letS (s-exp->symbol (second sl))
                            (parse (third sl))
                            (parse (fourth sl)))]
-              [(box)   (boxS   (parse (second sl)))]
-              [(unbox) (unboxS (parse (second sl)))]
               [else  (appS (parse (first sl)) (parse (second sl)))])]))]
-    [(s-exp-symbol? s) (idS (s-exp->symbol s))]
+    [(s-exp-symbol? s) (varS (s-exp->symbol s))]
     [else (error 'parse "invalid input")]))
 
 (define (desugar [a : ExprS]) : ExprC
   (type-case ExprS a
     [numS    (n)     (numC  n)]
-    [boolS   (b)     (boolC b)]
-    [idS     (i)     (idC   i)]
+    [varS    (i)     (varC  i)]
     [plusS   (l r)   (plusC (desugar l) (desugar r))]
     [multS   (l r)   (multC (desugar l) (desugar r))]
     [bminusS (l r)   (plusC (desugar l) 
                             (multC (numC -1) (desugar r)))]
     [uminusS (e)     (multC (numC -1) (desugar e))]
-    [ifS     (c l r) (ifC (desugar c) (desugar l) (desugar r))]
     [appS    (f a)   (appC (desugar f) (desugar a))]
     [lamS    (a b)   (lamC a (desugar b))]
-    [letS    (n v b) (appC (lamC n (desugar b)) (desugar v))]
-    [boxS    (a)     (boxC   (desugar a))]
-    [unboxS  (a)     (unboxC (desugar a))]))
+    [letS    (n v b) (appC (lamC n (desugar b)) (desugar v))]))
 
 ;; ---------------------
 ;; Interpreting
@@ -212,8 +182,7 @@
 (define (interp [e : ExprC] [env : Env] [sto : Store]) : Result
   (type-case ExprC e
     [numC  (n)     (v*s (numV   n) sto)]
-    [boolC (b)     (v*s (boolV  b) sto)]
-    [idC   (i)     (v*s (fetch (lookup i env) sto) sto)]
+    [varC  (i)     (v*s (fetch (lookup i env) sto) sto)]
     [plusC (l r)   (type-case Result (interp l env sto)
                      [v*s (v-l s-l)
                           (type-case Result (interp r env s-l)
@@ -224,11 +193,6 @@
                           (type-case Result (interp r env s-l)
                             [v*s (v-r s-r)
                                  (v*s (num+ v-l v-r) s-r)])])]
-    [ifC   (c l r) (type-case Result (interp c env sto)
-                     [v*s (v-c s-c)
-                          (type-case Value v-c
-                            [boolV (b) (if b (interp l env s-c) (interp r env s-c))]
-                            [else (error 'interp "non-conditional in if")])])]
     [appC (f p) (type-case Result (interp f env sto)
                   [v*s (v-f s-f)
                        (type-case Result (interp p env s-f)
@@ -239,26 +203,15 @@
                                                           where)
                                                     (closV-env v-f))
                                         (override-store (cell where v-p) s-p)))])])]
-    [lamC    (a b)   (v*s (closV a b env) sto)]
-    [boxC    (a)     (type-case Result (interp a env sto)
-                       [v*s (v-a s-a)
-                            (let ([where (new-loc)])
-                              (v*s (boxV where)
-                                   (override-store (cell where v-a)
-                                                    s-a)))])]
-    [unboxC  (a)     (type-case Result (interp a env sto)
-                       [v*s (v-a s-a)
-                            (v*s (fetch (boxV-l v-a) s-a) s-a)])]
-    ;; TODO: Instead of just writing a new binding, update the location
-    [setboxC (b v)   (type-case Result (interp b env sto)
-                       [v*s (v-b s-b)
-                            (type-case Result (interp v env s-b)
-                              [v*s (v-v s-v)
-                                   (v*s v-v
-                                        (update (boxV-l v-b) v-v s-v))])])]
-    [seqC    (b1 b2) (type-case Result (interp b1 env sto)
-                       [v*s (v-b1 s-b1)
-                            (interp b2 env s-b1)])]))
+    [lamC (a b)     (v*s (closV a b env) sto)]
+    [setC (var val) (type-case Result (interp val env sto)
+                      [v*s (v-val s-val)
+                           (let ([where (lookup var env)])
+                             (v*s v-val
+                               (update where v-val s-val)))])]
+    [seqC (b1 b2)   (type-case Result (interp b1 env sto)
+                    [v*s (v-b1 s-b1) 
+                         (interp b2 env s-b1)])]))
 
 ;; ---------------------
 ;; Helpers
@@ -291,19 +244,6 @@
 
 (compare '(((lam x (lam y (+ x y))) 4) 5) 
          (numV 9))
-
-;; Testing conditionals
-(compare '(if #t 10 15) 
-         (numV 10))
-
-(compare '(if #f 10 15) 
-         (numV 15))
-
-;; Testing boxes
-(compare '(box 5) (boxV 5))
-(compare '(unbox (box 5)) (numV 5))
-(compare '(unbox (unbox (box (box 5)))) (numV 5))
-(compare '(unbox (unbox (box (box 5)))) (numV 5))
 
 ;; Testing sequences
 ; (let ([b (box 0)])
